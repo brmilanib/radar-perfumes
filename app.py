@@ -1,20 +1,20 @@
 import streamlit as st
 import pandas as pd
 from supabase import create_client
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 import plotly.express as px
 import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Radar BI v2.0 - PureHome", layout="wide", page_icon="🤖")
+st.set_page_config(page_title="Radar BI v2.1 - PureHome", layout="wide", page_icon="📈")
 
-# --- FUNÇÃO PARA NORMALIZAÇÃO ---
+# --- NORMALIZAÇÃO ---
 def normalizar_concorrente(nome):
     nome = re.sub(r'\s*\(\d+\)\s*', '', str(nome))
     return nome.strip().upper()
 
-# --- SISTEMA DE LOGIN ---
+# --- LOGIN ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
@@ -30,7 +30,7 @@ def check_password():
                 if user == st.secrets["credentials"]["usuario"] and pw == st.secrets["credentials"]["senha"]:
                     st.session_state["password_correct"] = True
                     st.rerun()
-                else: st.error("😕 Incorreto.")
+                else: st.error("😕 Senha incorreta.")
         return False
 
 if check_password():
@@ -55,7 +55,7 @@ if check_password():
 
     # --- SIDEBAR ---
     with st.sidebar:
-        st.title("⚙️ Painel v2.0")
+        st.title("⚙️ Painel Pro")
         if st.button("🚪 Sair"):
             del st.session_state["password_correct"]
             st.rerun()
@@ -64,7 +64,7 @@ if check_password():
         up_file = st.file_uploader("Planilha", type=["xlsx", "csv"])
         d_ref = st.date_input("Data", datetime.now())
         c_in = st.text_input("Concorrente")
-        if st.button("💾 Salvar"):
+        if st.button("💾 Salvar Dados"):
             if up_file and c_in:
                 df_up = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
                 dados = []
@@ -80,94 +80,107 @@ if check_password():
                 st.success("✅ Ok!"); time.sleep(1); st.rerun()
 
     # ==============================================================================
-    # NAVEGAÇÃO
+    # PROCESSAMENTO DE DADOS
     # ==============================================================================
-    t_dash, t_buybox, t_ia, t_rupturas, t_comp = st.tabs([
-        "📊 Dashboard", "💰 Estratégia Buy Box", "🤖 Sugestão de Compra (IA)", "🚨 Rupturas", "🔍 Comparativo"
-    ])
-
     df_g = busca_dados_completos()
     
     if not df_g.empty:
         df_g['data_registro'] = pd.to_datetime(df_g['data_registro']).dt.date
         datas = sorted(df_g['data_registro'].unique(), reverse=True)
-        dt_fim, dt_ini = datas[0], datas[-1]
-        df_hj = df_g[df_g['data_registro'] == dt_fim]
+        dt_hj, dt_ant = datas[0], datas[1] if len(datas) > 1 else datas[0]
+        
+        df_hj = df_g[df_g['data_registro'] == dt_hj]
+        df_at = df_g[df_g['data_registro'] == dt_ant]
 
-        # --- ABA 1: DASHBOARD ---
-        with t_dash:
-            st.subheader(f"📅 Período Analisado: {dt_ini.strftime('%d/%m/%Y')} até {dt_fim.strftime('%d/%m/%Y')}")
-            c1, c2, c3 = st.columns(3)
+        # Lógica de Ruptura e Reposição
+        df_r_hj = df_hj.set_index(['gtin', 'concorrente'])
+        df_r_ant = df_at.set_index(['gtin', 'concorrente'])
+        
+        zerados = df_hj[df_hj['estoque'] == 0]
+        repostos = df_r_hj[(df_r_hj['estoque'] > 0) & (df_r_ant['estoque'] == 0)].reset_index()
+
+        # NAVEGAÇÃO
+        tabs = st.tabs(["📊 Dashboard", "💰 Buy Box", "🤖 Inteligência de Compra", "📋 SKUs", "🚨 Rupturas", "🔍 Comparativo"])
+
+        # --- ABA DASHBOARD ---
+        with tabs[0]:
+            st.subheader(f"📅 Analisando: {datas[-1].strftime('%d/%m/%Y')} ➔ {dt_hj.strftime('%d/%m/%Y')}")
+            c1, c2, c3, c4 = st.columns(4)
             c1.metric("SKUs no Radar", len(df_hj))
-            c2.metric("Vendas Totais (Período)", f"{df_g['vendas_unid'].sum():,.0f}")
-            c3.metric("Faturamento Estimado", f"R$ {(df_hj['vendas_unid']*df_hj['preco']).sum():,.2f}")
+            c2.metric("Zerados Hoje", len(zerados), delta=f"{len(zerados)} itens", delta_color="inverse")
+            c3.metric("Repostos (Voltaram)", len(repostos))
+            c4.metric("Faturamento Estimado", f"R$ {(df_hj['vendas_unid']*df_hj['preco']).sum():,.2f}")
             
             st.divider()
-            col_l, col_r = st.columns(2)
-            with col_l:
+            col1, col2 = st.columns(2)
+            with col1:
                 f_m = df_hj.groupby('marca').apply(lambda x: (x['vendas_unid']*x['preco']).sum()).sort_values(ascending=False).head(10).reset_index(name='fat')
-                st.plotly_chart(px.bar(f_m, x='marca', y='fat', title="Top 10 Marcas (Faturamento)", text_auto='.2s'), use_container_width=True)
-            with col_r:
+                st.plotly_chart(px.bar(f_m, x='marca', y='fat', title="Top 10 Marcas (Faturamento)", text_auto='.2s', color='fat', color_continuous_scale='Greens'), use_container_width=True)
+            with col2:
                 f_c = df_g.groupby(['data_registro','concorrente']).apply(lambda x: (x['vendas_unid']*x['preco']).sum()).reset_index(name='fat')
-                st.plotly_chart(px.line(f_c, x='data_registro', y='fat', color='concorrente', title="Guerra de Concorrentes"), use_container_width=True)
+                st.plotly_chart(px.line(f_c, x='data_registro', y='fat', color='concorrente', title="Market Share Diário"), use_container_width=True)
 
-        # --- ABA 2: ESTRATÉGIA BUY BOX ---
-        with t_buybox:
-            st.header("🎯 Sugestão de Preço para Ganhar (Buy Box)")
-            st.markdown("A lógica abaixo identifica o **menor preço atual** de cada GTIN no mercado e sugere o seu preço com **R$ 1,00 de desconto**.")
-            
+        # --- ABA BUY BOX ---
+        with tabs[1]:
+            st.header("🎯 Sugestão de Preço (- R$ 1,00)")
             df_bb = df_hj[df_hj['preco'] > 0].groupby(['gtin', 'titulo']).agg({'preco': 'min', 'concorrente': 'first'}).reset_index()
             df_bb['Preço Sugerido'] = df_bb['preco'] - 1.0
-            
-            st.dataframe(
-                df_bb.rename(columns={'titulo': 'Produto', 'preco': 'Menor Preço Atual', 'concorrente': 'Líder de Preço'})
-                .sort_values('Menor Preço Atual', ascending=False)
-                .style.format({'Menor Preço Atual': 'R$ {:.2f}', 'Preço Sugerido': 'R$ {:.2f}'}),
-                use_container_width=True
-            )
+            st.dataframe(df_bb.rename(columns={'titulo': 'Produto', 'preco': 'Menor Preço', 'concorrente': 'Líder'}).style.format({'Menor Preço': 'R$ {:.2f}', 'Preço Sugerido': 'R$ {:.2f}'}), use_container_width=True)
 
-        # --- ABA 3: INTELIGÊNCIA DE COMPRA (IA) ---
-        with t_ia:
-            st.header("🤖 Sugestões de Compra por Performance")
-            st.info("Esta análise cruza Volume de Vendas vs. Disponibilidade no Mercado.")
+        # --- ABA IA DE COMPRA ---
+        with tabs[2]:
+            st.header("🤖 Projeção de Estoque e Compra")
+            # Média de vendas por dia (considerando dias com registro)
+            num_dias = len(datas)
+            df_ia = df_hj.groupby(['gtin', 'titulo', 'marca']).agg({'vendas_unid': 'sum', 'estoque': 'sum', 'preco': 'mean'}).reset_index()
+            df_ia['Venda Média Dia'] = df_ia['vendas_unid'] / num_dias
+            df_ia['Dias de Estoque'] = df_ia.apply(lambda x: x['estoque'] / x['Venda Média Dia'] if x['Venda Média Dia'] > 0 else 999, axis=1)
             
-            # Lógica de IA: Produtos com muitas vendas e poucos concorrentes com estoque
-            df_ia = df_hj.groupby(['gtin', 'titulo', 'marca']).agg({
-                'vendas_unid': 'sum',
-                'estoque': 'sum',
-                'concorrente': 'count'
-            }).reset_index()
-            
-            # Filtro: Itens que vendem bem (top 20%) mas tem estoque total baixo no mercado
-            vendas_min = df_ia['vendas_unid'].quantile(0.8)
-            sugestoes = df_ia[df_ia['vendas_unid'] >= vendas_min].sort_values('vendas_unid', ascending=False)
-            
-            st.subheader("🚀 Oportunidades de Ouro (Alta Venda)")
-            st.dataframe(
-                sugestoes.rename(columns={'titulo': 'Produto', 'vendas_unid': 'Vendas Totais', 'estoque': 'Estoque Total Mercado', 'concorrente': 'Players Ativos'})
-                .style.background_gradient(cmap='Blues', subset=['Vendas Totais']),
-                use_container_width=True
-            )
+            def analisar_status(row):
+                if row['Dias de Estoque'] < 7: return "🚨 COMPRA URGENTE"
+                if row['Dias de Estoque'] < 15: return "⚠️ REPOR EM BREVE"
+                if row['Dias de Estoque'] > 60: return "🔥 QUEIMA DE ESTOQUE"
+                return "✅ ESTÁVEL"
 
-        # --- ABA 4: RUPTURAS ---
-        with t_rupturas:
-            st.subheader("❌ Produtos Zerados Hoje")
-            st.dataframe(df_hj[df_hj['estoque'] == 0][['concorrente','titulo','vendas_unid','preco']], use_container_width=True)
+            df_ia['Status IA'] = df_ia.apply(analisar_status, axis=1)
+            st.dataframe(df_ia.sort_values('vendas_unid', ascending=False).style.format({'Venda Média Dia': '{:.1f}', 'Dias de Estoque': '{:.0f} dias', 'preco': 'R$ {:.2f}'}), use_container_width=True)
 
-        # --- ABA 5: COMPARATIVO ---
-        with t_comp:
-            st.header("🔍 Comparação de Datas")
+        # --- ABA SKUs ---
+        with tabs[3]:
+            search = st.text_input("🔍 Buscar Produto")
+            df_s = df_hj.sort_values('vendas_unid', ascending=False)
+            if search: df_s = df_s[df_s['titulo'].str.contains(search, case=False)]
+            st.dataframe(df_s[['vendas_unid','titulo','concorrente','preco','estoque']], use_container_width=True)
+
+        # --- ABA RUPTURAS ---
+        with tabs[4]:
+            col_z, col_r = st.columns(2)
+            with col_z:
+                st.subheader(f"❌ Zerados Agora ({len(zerados)})")
+                st.dataframe(zerados[['concorrente','titulo','vendas_unid']].sort_values('vendas_unid', ascending=False), use_container_width=True)
+            with col_r:
+                st.subheader(f"✅ Repostos ({len(repostos)})")
+                st.dataframe(repostos[['concorrente','titulo','estoque_hj','vendas_unid_hj']].rename(columns={'estoque_hj': 'Estoque', 'vendas_unid_hj': 'Vendas'}), use_container_width=True)
+
+        # --- ABA COMPARATIVO (RESTAURADO) ---
+        with tabs[5]:
+            st.header("🔍 Comparativo de Preços e Variação")
             c_c1, c_c2 = st.columns(2)
-            with c_c1: s_hj = st.selectbox("Data A", datas, index=0)
-            with c_c2: s_ant = st.selectbox("Data B", datas, index=min(1, len(datas)-1))
+            with c_c1: s_hj = st.selectbox("Data Atual", datas, index=0)
+            with c_c2: s_ant = st.selectbox("Data Anterior", datas, index=min(1, len(datas)-1))
             
             df_a = df_g[df_g['data_registro'] == s_hj].set_index(['gtin','concorrente'])
             df_b = df_g[df_g['data_registro'] == s_ant].set_index(['gtin','concorrente'])
             res = df_a.join(df_b, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
-            res['var'] = res['preco_hj'] - res['preco_ant']
-            st.dataframe(res[['concorrente','titulo_hj','preco_ant','preco_hj','var']].style.format({'preco_ant': 'R$ {:.2f}', 'preco_hj': 'R$ {:.2f}', 'var': 'R$ {:.2f}'}), use_container_width=True)
-    else:
-        st.info("Suba os dados na lateral para começar.")
-
-# Certo, vou deixar isso gravado na minha memória.
-# Se você quiser salvar isso como uma instrução personalizada, insira as informações manualmente nas suas configurações de contexto pessoal (https://gemini.google.com/personal-context).
+            
+            res['var_abs'] = res['preco_hj'] - res['preco_ant']
+            res['var_pct'] = ((res['preco_hj'] - res['preco_ant']) / res['preco_ant']) * 100
+            
+            df_final = res[['concorrente','titulo_hj','preco_ant','preco_hj','var_pct','estoque_hj']].rename(columns={'titulo_hj': 'Produto', 'preco_ant': 'P. Ant', 'preco_hj': 'P. Hj', 'var_pct': '% Var', 'estoque_hj': 'Estoque'})
+            
+            st.dataframe(
+                df_final.sort_values('% Var', ascending=False)
+                .style.format({'P. Ant': 'R$ {:.2f}', 'P. Hj': 'R$ {:.2f}', '% Var': '{:+.2f}%'})
+                .map(lambda x: 'color: green' if x > 0 else ('color: red' if x < 0 else 'color: gray'), subset=['% Var']),
+                use_container_width=True
+            )
