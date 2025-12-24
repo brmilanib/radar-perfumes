@@ -142,7 +142,14 @@ if check_password():
             
             # Cálculos de Base
             num_dias = len(datas)
-            df_ia = df_hj.groupby(['gtin', 'titulo', 'marca']).agg({'vendas_unid': 'sum', 'estoque': 'sum', 'preco': 'mean'}).reset_index()
+            
+            # Agrupamento para calcular faturamento e giro
+            df_ia = df_hj.groupby(['gtin', 'titulo', 'marca']).agg({
+                'vendas_unid': 'sum', 
+                'estoque': 'sum', 
+                'preco': 'min' # Aqui pegamos o menor preço praticado no mercado para o GTIN
+            }).reset_index()
+            
             df_ia['Venda/Dia'] = df_ia['vendas_unid'] / num_dias
             df_ia['Dias Estoque'] = df_ia.apply(lambda x: x['estoque'] / x['Venda/Dia'] if x['Venda/Dia'] > 0 else 999, axis=1)
             
@@ -182,25 +189,26 @@ if check_password():
                 st.plotly_chart(fig_ia, use_container_width=True)
 
             with col_table:
-                # Seletor para focar em uma ação específica
                 filtro_acao = st.multiselect("Filtrar por Status", ["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE", "✅ ESTÁVEL", "🔥 QUEIMA / LENTO"], default=["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE"])
                 
                 df_ia_filtered = df_ia[df_ia['Sugestão'].isin(filtro_acao)].sort_values(['Sugestão', 'vendas_unid'], ascending=[True, False])
                 
                 st.dataframe(
-                    df_ia_filtered[['Sugestão', 'titulo', 'marca', 'vendas_unid', 'estoque', 'Venda/Dia', 'Dias Estoque']]
+                    df_ia_filtered[['Sugestão', 'titulo', 'marca', 'vendas_unid', 'estoque', 'preco', 'Venda/Dia', 'Dias Estoque']]
                     .rename(columns={
                         'titulo': 'Produto', 
                         'vendas_unid': 'Vendas Totais', 
                         'estoque': 'Estoque Atual',
+                        'preco': 'Menor Preço Mercado',
                         'Venda/Dia': 'Giro Médio/Dia',
                         'Dias Estoque': 'Autonomia'
                     })
                     .style.format({
+                        'Menor Preço Mercado': 'R$ {:.2f}',
                         'Giro Médio/Dia': '{:.1f}', 
                         'Autonomia': '{:.0f} dias'
                     })
-                    .map(lambda x: 'background-color: #f8d7da' if x == "🚨 COMPRA URGENTE" else ('background-color: #fff3cd' if x == "⚠️ REPOR BREVE" else ''), subset=['Sugestão']),
+                    .map(lambda x: 'background-color: #f8d7da; color: black; font-weight: bold' if x == "🚨 COMPRA URGENTE" else ('background-color: #fff3cd; color: black' if x == "⚠️ REPOR BREVE" else ''), subset=['Sugestão']),
                     use_container_width=True,
                     height=600
                 )
@@ -244,4 +252,5 @@ if check_password():
             )
     else:
         st.info("Aguardando upload de dados...")
+
 
