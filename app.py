@@ -8,7 +8,6 @@ import time
 st.set_page_config(page_title="Radar de Perfumes ML", layout="wide", page_icon="💎")
 
 # --- SISTEMA DE LOGIN ---
-
 def check_password():
     """Retorna True se o usuário inseriu a senha correta."""
     if "password_correct" not in st.session_state:
@@ -40,8 +39,6 @@ def check_password():
         return False
     return False
 
-# O restante do código abaixo (if check_password(): ...) permanece igual
-
 # Só executa o resto do código se o login for bem-sucedido
 if check_password():
 
@@ -64,7 +61,7 @@ if check_password():
 
     supabase = init_connection()
 
-    # --- FUNÇÃO BUSCA PAGINADA ---
+    # --- FUNÇÃO BUSCA PAGINADA (SEM LIMITES) ---
     def busca_dados_completos(datas, lista_concorrentes=None):
         todos_os_dados = []
         offset = 0
@@ -139,15 +136,21 @@ if check_password():
                         st.error(f"Erro: {e}")
 
         st.markdown("---")
-        st.caption("🛠️ Versão do Sistema: v1.6")
+        st.caption("🛠️ Versão do Sistema: v1.6.2")
         with st.expander("📝 Notas da Atualização"):
-            st.markdown("**v1.6 (Atual)**\n- ✅ Tela de Login Segura.")
+            st.markdown("""
+            **v1.6.2 (Atual)**
+            - ✅ Restauração de cores e R$ nos relatórios.
+            - ✅ Adicionada coluna de Estoque nas variações.
+            - ✅ Login seguro por formulário.
+            """)
 
     # ==============================================================================
-    # 2. ÁREA DE ANÁLISE
+    # 2. ÁREA DE ANÁLISE (ESTILIZADA)
     # ==============================================================================
     if supabase:
         try:
+            # Busca as opções de filtro através da View SQL
             df_meta = pd.DataFrame(supabase.table('view_filtros').select("*").execute().data)
             if not df_meta.empty:
                 df_meta['data_registro'] = pd.to_datetime(df_meta['data_registro']).dt.date
@@ -163,37 +166,86 @@ if check_password():
 
                 if st.button("🔎 Gerar Análise", type="primary"):
                     df_dados = busca_dados_completos([str(d_base), str(d_atual)], f_conc)
+                    
                     if not df_dados.empty:
                         df_dados['data_registro'] = pd.to_datetime(df_dados['data_registro']).dt.date
                         df_hj = df_dados[df_dados['data_registro'] == d_atual].set_index(['gtin', 'concorrente'])
                         df_ant = df_dados[df_dados['data_registro'] == d_base].set_index(['gtin', 'concorrente'])
+                        
+                        # Cruzamento de dados (Inner Join)
                         df_final = df_hj.join(df_ant, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
                         
+                        # Cálculos de Performance
                         df_final['diff_preco'] = df_final['preco_hj'] - df_final['preco_ant']
                         df_final['variacao_pct'] = 0.0
                         mask = df_final['preco_ant'] > 0
                         df_final.loc[mask, 'variacao_pct'] = ((df_final['preco_hj'] - df_final['preco_ant']) / df_final['preco_ant']) * 100
                         
-                        df_dis = df_final.rename(columns={'titulo_hj': 'Produto', 'concorrente': 'Concorrente', 'preco_ant': 'Preço ANT', 'preco_hj': 'Preço ATUAL', 'estoque_hj': 'Estoque', 'vendas_unid_hj': 'Vendas'})
+                        # Renomeação para exibição
+                        df_dis = df_final.rename(columns={
+                            'titulo_hj': 'Produto', 
+                            'concorrente': 'Concorrente', 
+                            'preco_ant': 'Preço ANT', 
+                            'preco_hj': 'Preço ATUAL', 
+                            'estoque_hj': 'Estoque', 
+                            'vendas_unid_hj': 'Vendas'
+                        })
                         
+                        # KPIs superiores
                         k1, k2, k3 = st.columns(3)
                         k1.metric("Produtos Cruzados", len(df_dis))
                         k2.metric("Subiram 🟢", len(df_dis[df_dis['diff_preco'] > 0.01]))
                         k3.metric("Baixaram 🔴", len(df_dis[df_dis['diff_preco'] < -0.01]))
 
-                        t1, t2, t3 = st.tabs(["📈 Variações", "🏆 Top 50", "🚨 Estoque Zerado"])
+                        # Abas de navegação
+                        t1, t2, t3 = st.tabs(["📈 Variações de Preço", "🏆 Top 50 Vendas", "🚨 Estoque Zerado"])
+                        
                         with t1:
+                            st.subheader("Quem mudou de preço?")
                             df_v = df_dis[abs(df_dis['diff_preco']) > 0.01].sort_values(by='variacao_pct', ascending=False)
-                            st.dataframe(df_v[['Concorrente', 'Produto', 'Preço ANT', 'Preço ATUAL', 'variacao_pct']].style.format({'Preço ANT': 'R$ {:.2f}', 'Preço ATUAL': 'R$ {:.2f}', 'variacao_pct': '{:+.2f}%'}).map(lambda x: 'color: green' if x > 0 else 'color: red', subset=['variacao_pct']), use_container_width=True)
+                            if not df_v.empty:
+                                st.dataframe(
+                                    df_v[['Concorrente', 'Produto', 'Preço ANT', 'Preço ATUAL', 'variacao_pct', 'Estoque']]
+                                    .style.format({
+                                        'Preço ANT': 'R$ {:.2f}', 
+                                        'Preço ATUAL': 'R$ {:.2f}', 
+                                        'variacao_pct': '{:+.2f}%'
+                                    })
+                                    .map(lambda x: 'color: #28a745; font-weight: bold' if x > 0 else 'color: #dc3545; font-weight: bold', subset=['variacao_pct']),
+                                    use_container_width=True
+                                )
+                            else:
+                                st.info("Sem variações de preço para estes filtros.")
+
                         with t2:
+                            st.subheader("Produtos que mais vendem")
                             df_t = df_dis.sort_values(by='Vendas', ascending=False).head(50)
-                            st.dataframe(df_t[['Produto', 'Concorrente', 'Vendas', 'Preço ATUAL', 'variacao_pct']].style.format({'Preço ATUAL': 'R$ {:.2f}', 'variacao_pct': '{:+.2f}%'}), use_container_width=True)
+                            st.dataframe(
+                                df_t[['Vendas', 'Produto', 'Concorrente', 'Preço ATUAL', 'variacao_pct', 'Estoque']]
+                                .style.format({
+                                    'Preço ATUAL': 'R$ {:.2f}', 
+                                    'variacao_pct': '{:+.2f}%'
+                                })
+                                .map(lambda x: 'color: #28a745' if x > 0 else ('color: #dc3545' if x < 0 else 'color: gray'), subset=['variacao_pct'])
+                                .background_gradient(cmap='Greens', subset=['Vendas']),
+                                use_container_width=True
+                            )
+
                         with t3:
+                            st.subheader("Alerta: Itens que zeraram estoque")
                             z = df_final[(df_final['estoque_hj'] == 0) & (df_final['estoque_ant'] > 0)]
-                            st.dataframe(z[['concorrente', 'titulo_hj', 'preco_hj', 'estoque_ant']], use_container_width=True)
-                    else: st.warning("Sem dados para cruzar.")
-        except Exception as e: st.error(f"Erro: {e}")
-
-# OK, vou acrescentar isso à minha memória.
-# Se quiser guardar isto sob a forma de uma instrução personalizada, pode adicioná-la às suas personal context settings (https://gemini.google.com/personal-context).
-
+                            if not z.empty:
+                                st.dataframe(
+                                    z[['concorrente', 'titulo_hj', 'preco_hj', 'estoque_ant']]
+                                    .rename(columns={'concorrente': 'Concorrente', 'titulo_hj': 'Produto', 'preco_hj': 'Preço', 'estoque_ant': 'Estoque Anterior'})
+                                    .style.format({'Preço': 'R$ {:.2f}'}), 
+                                    use_container_width=True
+                                )
+                            else:
+                                st.success("Nenhum produto esgotado detectado no período.")
+                                
+                    else: st.warning("Não encontrei produtos correspondentes nestas duas datas.")
+            else:
+                st.info("👋 O banco de dados está vazio. Suba uma planilha na lateral.")
+                
+        except Exception as e: st.error(f"Erro no processamento dos dados: {e}")
