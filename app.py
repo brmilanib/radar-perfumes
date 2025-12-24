@@ -136,9 +136,11 @@ if check_password():
             df_bb['Sugerido'] = df_bb['preco'] - 1.0
             st.dataframe(df_bb.rename(columns={'titulo': 'Produto', 'preco': 'Menor Preço', 'concorrente': 'Líder'}).style.format({'Menor Preço': 'R$ {:.2f}', 'Sugerido': 'R$ {:.2f}'}), use_container_width=True)
 
-        # --- ABA 3: IA DE COMPRA ---
+        # --- ABA 3: INTELIGÊNCIA DE COMPRA (IA) ---
         with tabs[2]:
-            st.header("🤖 Projeção de Estoque")
+            st.header("🤖 Projeção de Estoque e Inteligência de Compra")
+            
+            # Cálculos de Base
             num_dias = len(datas)
             df_ia = df_hj.groupby(['gtin', 'titulo', 'marca']).agg({'vendas_unid': 'sum', 'estoque': 'sum', 'preco': 'mean'}).reset_index()
             df_ia['Venda/Dia'] = df_ia['vendas_unid'] / num_dias
@@ -151,8 +153,57 @@ if check_password():
                 return "✅ ESTÁVEL"
 
             df_ia['Sugestão'] = df_ia.apply(status_ia, axis=1)
-            st.dataframe(df_ia.sort_values('vendas_unid', ascending=False).style.format({'Venda/Dia': '{:.1f}', 'Dias Estoque': '{:.0f} dias', 'preco': 'R$ {:.2f}'}), use_container_width=True)
+            
+            # --- 1. RESUMO E LEGENDA ---
+            resumo_ia = df_ia['Sugestão'].value_counts()
+            
+            c_ia1, c_ia2, c_ia3, c_ia4 = st.columns(4)
+            c_ia1.metric("🚨 Urgentes", resumo_ia.get("🚨 COMPRA URGENTE", 0))
+            c_ia2.metric("⚠️ Repor Breve", resumo_ia.get("⚠️ REPOR BREVE", 0))
+            c_ia3.metric("✅ Estáveis", resumo_ia.get("✅ ESTÁVEL", 0))
+            c_ia4.metric("🔥 Queima/Lento", resumo_ia.get("🔥 QUEIMA / LENTO", 0))
 
+            st.divider()
+
+            # --- 2. GRÁFICO E LISTAGEM ---
+            col_graph, col_table = st.columns([1, 3])
+            
+            with col_graph:
+                st.subheader("Saúde do Estoque")
+                fig_ia = px.pie(df_ia, names='Sugestão', hole=0.4, 
+                               color='Sugestão',
+                               color_discrete_map={
+                                   "🚨 COMPRA URGENTE": "#dc3545",
+                                   "⚠️ REPOR BREVE": "#ffc107",
+                                   "✅ ESTÁVEL": "#28a745",
+                                   "🔥 QUEIMA / LENTO": "#6c757d"
+                               })
+                fig_ia.update_layout(showlegend=False, height=300, margin=dict(l=0, r=0, t=0, b=0))
+                st.plotly_chart(fig_ia, use_container_width=True)
+
+            with col_table:
+                # Seletor para focar em uma ação específica
+                filtro_acao = st.multiselect("Filtrar por Status", ["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE", "✅ ESTÁVEL", "🔥 QUEIMA / LENTO"], default=["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE"])
+                
+                df_ia_filtered = df_ia[df_ia['Sugestão'].isin(filtro_acao)].sort_values(['Sugestão', 'vendas_unid'], ascending=[True, False])
+                
+                st.dataframe(
+                    df_ia_filtered[['Sugestão', 'titulo', 'marca', 'vendas_unid', 'estoque', 'Venda/Dia', 'Dias Estoque']]
+                    .rename(columns={
+                        'titulo': 'Produto', 
+                        'vendas_unid': 'Vendas Totais', 
+                        'estoque': 'Estoque Atual',
+                        'Venda/Dia': 'Giro Médio/Dia',
+                        'Dias Estoque': 'Autonomia'
+                    })
+                    .style.format({
+                        'Giro Médio/Dia': '{:.1f}', 
+                        'Autonomia': '{:.0f} dias'
+                    })
+                    .map(lambda x: 'background-color: #f8d7da' if x == "🚨 COMPRA URGENTE" else ('background-color: #fff3cd' if x == "⚠️ REPOR BREVE" else ''), subset=['Sugestão']),
+                    use_container_width=True,
+                    height=600
+                )
         # --- ABA 4: SKUs ---
         with tabs[3]:
             search = st.text_input("🔍 Buscar Produto")
@@ -193,3 +244,4 @@ if check_password():
             )
     else:
         st.info("Aguardando upload de dados...")
+
