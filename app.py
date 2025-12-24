@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 from datetime import datetime
-import time # Importante para o recarregamento automático
+import time 
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Radar de Perfumes ML", layout="wide", page_icon="💎")
@@ -85,30 +85,22 @@ with st.sidebar:
                         
                     st.success(f"✅ Sucesso! {len(dados_envio)} produtos salvos! Atualizando sistema...")
                     
-                    # --- FORÇA A ATUALIZAÇÃO DA PÁGINA ---
-                    time.sleep(2) # Espera o banco gravar
-                    st.rerun()    # Recarrega para aparecer a data nova
+                    # --- FORÇA A ATUALIZAÇÃO ---
+                    time.sleep(2) 
+                    st.rerun()    
                     
                 except Exception as e:
                     st.error(f"Erro ao processar arquivo: {e}")
         else:
             st.warning("Preencha o arquivo e o nome do concorrente.")
 
-    # --- CHANGELOG (VERSÃO DO SISTEMA) ---
+    # --- CHANGELOG ---
     st.markdown("---")
-    st.caption("🛠️ Versão do Sistema: v1.3")
-    
+    st.caption("🛠️ Versão do Sistema: v1.4")
     with st.expander("📝 Notas da Atualização"):
         st.markdown("""
-        **v1.3 (Atual)**
-        - ✅ Correção: Atualização automática após upload.
-        
-        **v1.2**
-        - ✅ Aba Top 50 Mais Vendidos.
-        - ✅ Indicadores de variação coloridos (Verde/Vermelho).
-        
-        **v1.0**
-        - Lançamento do Banco de Dados Nuvem.
+        **v1.4 (Atual)**
+        - 🚀 Performance: Uso de VIEW SQL para carregar filtros instantaneamente sem limites de linhas.
         """)
 
 # ==============================================================================
@@ -117,8 +109,10 @@ with st.sidebar:
 
 if supabase:
     try:
-        # Busca dados para os filtros
-        df_meta = pd.DataFrame(supabase.table('historico_concorrentes').select("concorrente, data_registro").execute().data)
+        # AQUI FOI A CORREÇÃO MÁGICA:
+        # Em vez de ler a tabela gigante 'historico_concorrentes', lemos a 'view_filtros'
+        # Isso garante que todas as datas apareçam, mesmo com 1 milhão de produtos.
+        df_meta = pd.DataFrame(supabase.table('view_filtros').select("*").execute().data)
         
         if not df_meta.empty:
             df_meta['data_registro'] = pd.to_datetime(df_meta['data_registro']).dt.date
@@ -126,7 +120,7 @@ if supabase:
             lista_datas = sorted(df_meta['data_registro'].unique(), reverse=True)
             lista_concorrentes = sorted(df_meta['concorrente'].unique())
             
-            # Seleção Inteligente de datas
+            # Seleção Inteligente
             idx_anterior = 1 if len(lista_datas) > 1 else 0
 
             st.markdown("### 🔍 Configuração do Relatório")
@@ -143,6 +137,7 @@ if supabase:
             if st.button("🔎 Gerar Análise de Mercado", type="primary"):
                 
                 with st.spinner("Cruzando dados dos concorrentes..."):
+                    # Aqui continuamos lendo a tabela normal, pois precisamos dos dados completos filtrados
                     query = supabase.table('historico_concorrentes').select("*").in_('data_registro', [str(data_base), str(data_atual)])
                     
                     if filtro_concorrentes:
@@ -156,14 +151,14 @@ if supabase:
                         df_hoje = df_dados[df_dados['data_registro'] == data_atual].set_index(['gtin', 'concorrente'])
                         df_antes = df_dados[df_dados['data_registro'] == data_base].set_index(['gtin', 'concorrente'])
                         
-                        # Join (Cruzamento)
+                        # Join
                         df_final = df_hoje.join(df_antes, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
                         
                         # Cálculos
                         df_final['diff_preco'] = df_final['preco_hj'] - df_final['preco_ant']
                         df_final['variacao_pct'] = ((df_final['preco_hj'] - df_final['preco_ant']) / df_final['preco_ant']) * 100
                         
-                        # Renomear colunas
+                        # Renomear
                         df_display = df_final.rename(columns={
                             'titulo_hj': 'Produto',
                             'concorrente': 'Concorrente',
@@ -189,7 +184,7 @@ if supabase:
                         # ABAS
                         tab1, tab2, tab3 = st.tabs(["📈 Variação de Preço", "🏆 Top 50 Mais Vendidos", "🚨 Estoque Zerado"])
 
-                        # ABA 1: VARIAÇÃO
+                        # ABA 1
                         with tab1:
                             st.subheader("Quem mudou de preço?")
                             df_var = df_display[df_display['diff_preco'] != 0].copy()
@@ -210,7 +205,7 @@ if supabase:
                             else:
                                 st.info("Nenhuma alteração de preço detectada.")
 
-                        # ABA 2: TOP 50 VENDIDOS
+                        # ABA 2
                         with tab2:
                             st.subheader(f"🏆 Top 50 Mais Vendidos (Evolução de Preço)")
                             df_top = df_display.sort_values(by='Vendas (Unid)', ascending=False).head(50)
@@ -231,7 +226,7 @@ if supabase:
                                 use_container_width=True
                             )
 
-                        # ABA 3: ESTOQUE ZERADO
+                        # ABA 3
                         with tab3:
                             st.subheader("🚨 Produtos que ZERARAM no Concorrente")
                             zerados = df_final[(df_final['estoque_hj'] == 0) & (df_final['estoque_ant'] > 0)].copy()
