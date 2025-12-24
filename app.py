@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 from datetime import datetime
+import time # Importante para o recarregamento automático
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Radar de Perfumes ML", layout="wide", page_icon="💎")
@@ -40,15 +41,20 @@ with st.sidebar:
     
     nome_padrao = ""
     if uploaded_file:
-        nome_sugerido = uploaded_file.name.split('.')[0].replace("PERFUMES_", "").split(" - ")[0]
-        nome_padrao = nome_sugerido
+        try:
+            nome_sugerido = uploaded_file.name.split('.')[0].replace("PERFUMES_", "").split(" - ")[0]
+            nome_padrao = nome_sugerido
+        except:
+            nome_padrao = ""
     
     concorrente_input = st.text_input("Nome do Concorrente", value=nome_padrao)
 
+    # BOTÃO DE UPLOAD COM AUTO-REFRESH
     if st.button("💾 Salvar no Banco de Dados", type="primary"):
         if uploaded_file and concorrente_input and supabase:
             with st.spinner("Processando e enviando para a nuvem..."):
                 try:
+                    # Lê Excel ou CSV
                     try:
                         df = pd.read_csv(uploaded_file)
                     except:
@@ -72,34 +78,37 @@ with st.sidebar:
                             "sku_concorrente": str(row.get('SKU', ''))
                         })
                     
+                    # Envia em pacotes de 1000
                     chunk_size = 1000
                     for i in range(0, len(dados_envio), chunk_size):
                         supabase.table('historico_concorrentes').insert(dados_envio[i:i+chunk_size]).execute()
                         
-                    st.success(f"✅ Sucesso! {len(dados_envio)} produtos registrados para o dia {data_ref}.")
-                    st.balloons()
+                    st.success(f"✅ Sucesso! {len(dados_envio)} produtos salvos! Atualizando sistema...")
+                    
+                    # --- FORÇA A ATUALIZAÇÃO DA PÁGINA ---
+                    time.sleep(2) # Espera o banco gravar
+                    st.rerun()    # Recarrega para aparecer a data nova
                     
                 except Exception as e:
                     st.error(f"Erro ao processar arquivo: {e}")
         else:
             st.warning("Preencha o arquivo e o nome do concorrente.")
 
+    # --- CHANGELOG (VERSÃO DO SISTEMA) ---
     st.markdown("---")
-    st.info("💡 Dica: Suba os dados diariamente para manter o histórico atualizado.")
-
+    st.caption("🛠️ Versão do Sistema: v1.3")
     
-    st.markdown("---")
-    st.caption("🛠️ Versão do Sistema: v1.2")
-    
-    with st.expander("📝 Notas da Atualização (Changelog)"):
+    with st.expander("📝 Notas da Atualização"):
         st.markdown("""
-        **v1.2 (Atual)**
-        - ✅ Aba Top 50 Mais Vendidos adicionada.
-        - ✅ Cores nas variações de preço (Verde/Vermelho).
-        - ✅ Correção do erro gráfico (Matplotlib).
+        **v1.3 (Atual)**
+        - ✅ Correção: Atualização automática após upload.
+        
+        **v1.2**
+        - ✅ Aba Top 50 Mais Vendidos.
+        - ✅ Indicadores de variação coloridos (Verde/Vermelho).
         
         **v1.0**
-        - Sistema de Upload e Banco de Dados.
+        - Lançamento do Banco de Dados Nuvem.
         """)
 
 # ==============================================================================
@@ -108,6 +117,7 @@ with st.sidebar:
 
 if supabase:
     try:
+        # Busca dados para os filtros
         df_meta = pd.DataFrame(supabase.table('historico_concorrentes').select("concorrente, data_registro").execute().data)
         
         if not df_meta.empty:
@@ -116,6 +126,7 @@ if supabase:
             lista_datas = sorted(df_meta['data_registro'].unique(), reverse=True)
             lista_concorrentes = sorted(df_meta['concorrente'].unique())
             
+            # Seleção Inteligente de datas
             idx_anterior = 1 if len(lista_datas) > 1 else 0
 
             st.markdown("### 🔍 Configuração do Relatório")
@@ -128,6 +139,7 @@ if supabase:
             with c3:
                 data_base = st.selectbox("📅 Comparar com (Anterior)", lista_datas, index=idx_anterior)
 
+            # Botão de Gerar
             if st.button("🔎 Gerar Análise de Mercado", type="primary"):
                 
                 with st.spinner("Cruzando dados dos concorrentes..."):
@@ -144,14 +156,14 @@ if supabase:
                         df_hoje = df_dados[df_dados['data_registro'] == data_atual].set_index(['gtin', 'concorrente'])
                         df_antes = df_dados[df_dados['data_registro'] == data_base].set_index(['gtin', 'concorrente'])
                         
-                        # Join
+                        # Join (Cruzamento)
                         df_final = df_hoje.join(df_antes, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
                         
                         # Cálculos
                         df_final['diff_preco'] = df_final['preco_hj'] - df_final['preco_ant']
                         df_final['variacao_pct'] = ((df_final['preco_hj'] - df_final['preco_ant']) / df_final['preco_ant']) * 100
                         
-                        # Renomear para exibição
+                        # Renomear colunas
                         df_display = df_final.rename(columns={
                             'titulo_hj': 'Produto',
                             'concorrente': 'Concorrente',
@@ -162,7 +174,7 @@ if supabase:
                             'marca_hj': 'Marca'
                         })
 
-                        # KPI Cards
+                        # KPIs
                         total_prods = len(df_display)
                         subiu = len(df_display[df_display['diff_preco'] > 0.1])
                         caiu = len(df_display[df_display['diff_preco'] < -0.1])
@@ -174,7 +186,7 @@ if supabase:
                         
                         st.divider()
 
-                        # --- ABAS DE RESULTADO ---
+                        # ABAS
                         tab1, tab2, tab3 = st.tabs(["📈 Variação de Preço", "🏆 Top 50 Mais Vendidos", "🚨 Estoque Zerado"])
 
                         # ABA 1: VARIAÇÃO
@@ -198,14 +210,11 @@ if supabase:
                             else:
                                 st.info("Nenhuma alteração de preço detectada.")
 
-                        # ABA 2: TOP 50 VENDIDOS (COM VARIAÇÃO)
+                        # ABA 2: TOP 50 VENDIDOS
                         with tab2:
                             st.subheader(f"🏆 Top 50 Mais Vendidos (Evolução de Preço)")
-                            
-                            # Filtra Top 50 por volume de vendas
                             df_top = df_display.sort_values(by='Vendas (Unid)', ascending=False).head(50)
                             
-                            # Colunas que queremos ver
                             cols_top = ['Produto', 'Concorrente', 'Vendas (Unid)', 'Preço ANTES', 'Preço AGORA', 'variacao_pct', 'Estoque Atual']
                             
                             st.dataframe(
@@ -217,9 +226,7 @@ if supabase:
                                     'Vendas (Unid)': '{:.0f}',
                                     'Estoque Atual': '{:.0f}'
                                 })
-                                # Pinta o texto da Variação (Verde/Vermelho)
                                 .map(lambda x: 'color: green; font-weight: bold' if x > 0 else ('color: red; font-weight: bold' if x < 0 else 'color: gray'), subset=['variacao_pct'])
-                                # Pinta o fundo das Vendas (Gradiente Verde)
                                 .background_gradient(subset=['Vendas (Unid)'], cmap='Greens'),
                                 use_container_width=True
                             )
