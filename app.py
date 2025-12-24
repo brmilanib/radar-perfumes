@@ -20,7 +20,47 @@ def init_connection():
 
 supabase = init_connection()
 
-# --- ESTILO CSS PERSONALIZADO ---
+# --- FUNÇÃO NOVA: BUSCA PAGINADA (SEM LIMITES) ---
+def busca_dados_completos(datas, lista_concorrentes=None):
+    """
+    Busca dados no Supabase de 1000 em 1000 para contornar o limite da API.
+    Garante que TODOS os produtos sejam lidos.
+    """
+    todos_os_dados = []
+    offset = 0
+    tamanho_pacote = 1000
+    
+    # Barra de progresso para o usuário não achar que travou
+    bar = st.progress(0, text="Baixando dados do banco...")
+    
+    while True:
+        # Monta a query
+        query = supabase.table('historico_concorrentes').select("*").in_('data_registro', datas)
+        
+        if lista_concorrentes:
+            query = query.in_('concorrente', lista_concorrentes)
+            
+        # Pega o pacote atual (Ex: do 0 ao 1000, depois do 1000 ao 2000...)
+        response = query.range(offset, offset + tamanho_pacote - 1).execute()
+        dados = response.data
+        
+        if not dados:
+            break # Acabaram os dados
+            
+        todos_os_dados.extend(dados)
+        
+        # Atualiza barra
+        offset += tamanho_pacote
+        bar.progress(min(offset / (offset + 5000), 1.0), text=f"Lendo linhas {offset}...")
+        
+        # Se veio menos que o pacote, é porque acabou
+        if len(dados) < tamanho_pacote:
+            break
+            
+    bar.empty() # Remove a barra
+    return pd.DataFrame(todos_os_dados)
+
+# --- ESTILO CSS ---
 st.markdown("""
 <style>
     .metric-card {background-color: #f0f2f6; border-radius: 10px; padding: 15px; border: 1px solid #e0e0e0;}
@@ -49,12 +89,11 @@ with st.sidebar:
     
     concorrente_input = st.text_input("Nome do Concorrente", value=nome_padrao)
 
-    # BOTÃO DE UPLOAD COM AUTO-REFRESH
+    # BOTÃO DE UPLOAD
     if st.button("💾 Salvar no Banco de Dados", type="primary"):
         if uploaded_file and concorrente_input and supabase:
             with st.spinner("Processando e enviando para a nuvem..."):
                 try:
-                    # Lê Excel ou CSV
                     try:
                         df = pd.read_csv(uploaded_file)
                     except:
@@ -78,14 +117,11 @@ with st.sidebar:
                             "sku_concorrente": str(row.get('SKU', ''))
                         })
                     
-                    # Envia em pacotes de 1000
                     chunk_size = 1000
                     for i in range(0, len(dados_envio), chunk_size):
                         supabase.table('historico_concorrentes').insert(dados_envio[i:i+chunk_size]).execute()
                         
-                    st.success(f"✅ Sucesso! {len(dados_envio)} produtos salvos! Atualizando sistema...")
-                    
-                    # --- FORÇA A ATUALIZAÇÃO ---
+                    st.success(f"✅ Sucesso! {len(dados_envio)} produtos salvos! Atualizando...")
                     time.sleep(2) 
                     st.rerun()    
                     
@@ -96,11 +132,15 @@ with st.sidebar:
 
     # --- CHANGELOG ---
     st.markdown("---")
-    st.caption("🛠️ Versão do Sistema: v1.4")
+    st.caption("🛠️ Versão do Sistema: v1.5")
     with st.expander("📝 Notas da Atualização"):
         st.markdown("""
-        **v1.4 (Atual)**
-        - 🚀 Performance: Uso de VIEW SQL para carregar filtros instantaneamente sem limites de linhas.
+        **v1.5 (Atual)**
+        - 🚀 CORREÇÃO CRÍTICA: Sistema agora lê bases gigantes (>1000 produtos) sem cortar dados.
+        - Adicionada barra de progresso no carregamento.
+        
+        **v1.4**
+        - Otimização de Filtros (View).
         """)
 
 # ==============================================================================
@@ -109,9 +149,7 @@ with st.sidebar:
 
 if supabase:
     try:
-        # AQUI FOI A CORREÇÃO MÁGICA:
-        # Em vez de ler a tabela gigante 'historico_concorrentes', lemos a 'view_filtros'
-        # Isso garante que todas as datas apareçam, mesmo com 1 milhão de produtos.
+        # Usa a View Leve para os filtros
         df_meta = pd.DataFrame(supabase.table('view_filtros').select("*").execute().data)
         
         if not df_meta.empty:
@@ -120,7 +158,6 @@ if supabase:
             lista_datas = sorted(df_meta['data_registro'].unique(), reverse=True)
             lista_concorrentes = sorted(df_meta['concorrente'].unique())
             
-            # Seleção Inteligente
             idx_anterior = 1 if len(lista_datas) > 1 else 0
 
             st.markdown("### 🔍 Configuração do Relatório")
@@ -133,122 +170,125 @@ if supabase:
             with c3:
                 data_base = st.selectbox("📅 Comparar com (Anterior)", lista_datas, index=idx_anterior)
 
-            # Botão de Gerar
             if st.button("🔎 Gerar Análise de Mercado", type="primary"):
                 
-                with st.spinner("Cruzando dados dos concorrentes..."):
-                    # Aqui continuamos lendo a tabela normal, pois precisamos dos dados completos filtrados
-                    query = supabase.table('historico_concorrentes').select("*").in_('data_registro', [str(data_base), str(data_atual)])
+                # --- AQUI ESTÁ A MUDANÇA: Usamos a função nova ---
+                df_dados = busca_dados_completos(
+                    datas=[str(data_base), str(data_atual)], 
+                    lista_concorrentes=filtro_concorrentes
+                )
+
+                if not df_dados.empty:
+                    df_dados['data_registro'] = pd.to_datetime(df_dados['data_registro']).dt.date
                     
-                    if filtro_concorrentes:
-                        query = query.in_('concorrente', filtro_concorrentes)
+                    df_hoje = df_dados[df_dados['data_registro'] == data_atual].set_index(['gtin', 'concorrente'])
+                    df_antes = df_dados[df_dados['data_registro'] == data_base].set_index(['gtin', 'concorrente'])
                     
-                    df_dados = pd.DataFrame(query.execute().data)
+                    # Inner Join (Só compara o que existe nos DOIS dias)
+                    df_final = df_hoje.join(df_antes, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
+                    
+                    # Cálculos
+                    df_final['diff_preco'] = df_final['preco_hj'] - df_final['preco_ant']
+                    # Evita divisão por zero
+                    df_final['variacao_pct'] = 0.0
+                    mask_valid = df_final['preco_ant'] > 0
+                    df_final.loc[mask_valid, 'variacao_pct'] = ((df_final.loc[mask_valid, 'preco_hj'] - df_final.loc[mask_valid, 'preco_ant']) / df_final.loc[mask_valid, 'preco_ant']) * 100
+                    
+                    # Renomear
+                    df_display = df_final.rename(columns={
+                        'titulo_hj': 'Produto',
+                        'concorrente': 'Concorrente',
+                        'preco_ant': 'Preço ANTES',
+                        'preco_hj': 'Preço AGORA',
+                        'estoque_hj': 'Estoque Atual',
+                        'vendas_unid_hj': 'Vendas (Unid)',
+                        'marca_hj': 'Marca'
+                    })
 
-                    if not df_dados.empty:
-                        df_dados['data_registro'] = pd.to_datetime(df_dados['data_registro']).dt.date
-                        
-                        df_hoje = df_dados[df_dados['data_registro'] == data_atual].set_index(['gtin', 'concorrente'])
-                        df_antes = df_dados[df_dados['data_registro'] == data_base].set_index(['gtin', 'concorrente'])
-                        
-                        # Join
-                        df_final = df_hoje.join(df_antes, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
-                        
-                        # Cálculos
-                        df_final['diff_preco'] = df_final['preco_hj'] - df_final['preco_ant']
-                        df_final['variacao_pct'] = ((df_final['preco_hj'] - df_final['preco_ant']) / df_final['preco_ant']) * 100
-                        
-                        # Renomear
-                        df_display = df_final.rename(columns={
-                            'titulo_hj': 'Produto',
-                            'concorrente': 'Concorrente',
-                            'preco_ant': 'Preço ANTES',
-                            'preco_hj': 'Preço AGORA',
-                            'estoque_hj': 'Estoque Atual',
-                            'vendas_unid_hj': 'Vendas (Unid)',
-                            'marca_hj': 'Marca'
-                        })
+                    # KPIs
+                    total_prods = len(df_display)
+                    # Consideramos alteração qualquer coisa maior que 1 centavo para ignorar arredondamentos
+                    subiu = len(df_display[df_display['diff_preco'] > 0.01])
+                    caiu = len(df_display[df_display['diff_preco'] < -0.01])
+                    
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Produtos Cruzados (Iguais nos 2 dias)", total_prods)
+                    k2.metric("Subiram Preço 🟢", subiu, delta="Oportunidade")
+                    k3.metric("Baixaram Preço 🔴", caiu, delta="- Cuidado", delta_color="inverse")
+                    
+                    st.divider()
 
-                        # KPIs
-                        total_prods = len(df_display)
-                        subiu = len(df_display[df_display['diff_preco'] > 0.1])
-                        caiu = len(df_display[df_display['diff_preco'] < -0.1])
+                    # ABAS
+                    tab1, tab2, tab3 = st.tabs(["📈 Variação de Preço", "🏆 Top 50 Mais Vendidos", "🚨 Estoque Zerado"])
+
+                    # ABA 1
+                    with tab1:
+                        st.subheader("Quem mudou de preço?")
+                        df_var = df_display[abs(df_display['diff_preco']) > 0.01].copy()
                         
-                        k1, k2, k3 = st.columns(3)
-                        k1.metric("Produtos Analisados", total_prods)
-                        k2.metric("Subiram Preço 🟢", subiu, delta="Oportunidade")
-                        k3.metric("Baixaram Preço 🔴", caiu, delta="- Cuidado", delta_color="inverse")
-                        
-                        st.divider()
-
-                        # ABAS
-                        tab1, tab2, tab3 = st.tabs(["📈 Variação de Preço", "🏆 Top 50 Mais Vendidos", "🚨 Estoque Zerado"])
-
-                        # ABA 1
-                        with tab1:
-                            st.subheader("Quem mudou de preço?")
-                            df_var = df_display[df_display['diff_preco'] != 0].copy()
-                            
-                            if not df_var.empty:
-                                df_var = df_var.sort_values(by='variacao_pct', ascending=False)
-                                st.dataframe(
-                                    df_var[['Concorrente', 'Produto', 'Preço ANTES', 'Preço AGORA', 'variacao_pct', 'Estoque Atual']].style
-                                    .format({
-                                        'Preço ANTES': 'R$ {:.2f}',
-                                        'Preço AGORA': 'R$ {:.2f}',
-                                        'variacao_pct': '{:+.2f}%',
-                                        'Estoque Atual': '{:.0f}'
-                                    })
-                                    .map(lambda x: 'color: green; font-weight: bold' if x > 0 else 'color: red; font-weight: bold', subset=['variacao_pct']),
-                                    use_container_width=True, height=600
-                                )
-                            else:
-                                st.info("Nenhuma alteração de preço detectada.")
-
-                        # ABA 2
-                        with tab2:
-                            st.subheader(f"🏆 Top 50 Mais Vendidos (Evolução de Preço)")
-                            df_top = df_display.sort_values(by='Vendas (Unid)', ascending=False).head(50)
-                            
-                            cols_top = ['Produto', 'Concorrente', 'Vendas (Unid)', 'Preço ANTES', 'Preço AGORA', 'variacao_pct', 'Estoque Atual']
-                            
+                        if not df_var.empty:
+                            df_var = df_var.sort_values(by='variacao_pct', ascending=False)
                             st.dataframe(
-                                df_top[cols_top].style
+                                df_var[['Concorrente', 'Produto', 'Preço ANTES', 'Preço AGORA', 'variacao_pct', 'Estoque Atual']].style
                                 .format({
                                     'Preço ANTES': 'R$ {:.2f}',
                                     'Preço AGORA': 'R$ {:.2f}',
                                     'variacao_pct': '{:+.2f}%',
-                                    'Vendas (Unid)': '{:.0f}',
                                     'Estoque Atual': '{:.0f}'
                                 })
-                                .map(lambda x: 'color: green; font-weight: bold' if x > 0 else ('color: red; font-weight: bold' if x < 0 else 'color: gray'), subset=['variacao_pct'])
-                                .background_gradient(subset=['Vendas (Unid)'], cmap='Greens'),
+                                .map(lambda x: 'color: green; font-weight: bold' if x > 0 else 'color: red; font-weight: bold', subset=['variacao_pct']),
+                                use_container_width=True, height=600
+                            )
+                        else:
+                            st.info("Nenhuma alteração de preço detectada nos produtos cruzados.")
+
+                    # ABA 2
+                    with tab2:
+                        st.subheader(f"🏆 Top 50 Mais Vendidos")
+                        # Garante que Vendas seja numérico
+                        df_display['Vendas (Unid)'] = pd.to_numeric(df_display['Vendas (Unid)'], errors='coerce').fillna(0)
+                        df_top = df_display.sort_values(by='Vendas (Unid)', ascending=False).head(50)
+                        
+                        cols_top = ['Produto', 'Concorrente', 'Vendas (Unid)', 'Preço ANTES', 'Preço AGORA', 'variacao_pct', 'Estoque Atual']
+                        
+                        st.dataframe(
+                            df_top[cols_top].style
+                            .format({
+                                'Preço ANTES': 'R$ {:.2f}',
+                                'Preço AGORA': 'R$ {:.2f}',
+                                'variacao_pct': '{:+.2f}%',
+                                'Vendas (Unid)': '{:.0f}',
+                                'Estoque Atual': '{:.0f}'
+                            })
+                            .map(lambda x: 'color: green; font-weight: bold' if x > 0 else ('color: red; font-weight: bold' if x < 0 else 'color: gray'), subset=['variacao_pct'])
+                            .background_gradient(subset=['Vendas (Unid)'], cmap='Greens'),
+                            use_container_width=True
+                        )
+
+                    # ABA 3 - ESTOQUE ZERADO
+                    # Atenção: Estoque Zerado precisa pegar quem tinha estoque ANTES e agora é 0.
+                    with tab3:
+                        st.subheader("🚨 Produtos que ZERARAM no Concorrente")
+                        zerados = df_final[(df_final['estoque_hj'] == 0) & (df_final['estoque_ant'] > 0)].copy()
+                        
+                        if not zerados.empty:
+                            st.dataframe(
+                                zerados[['concorrente', 'titulo_hj', 'preco_hj', 'estoque_ant']].rename(columns={
+                                    'concorrente': 'Concorrente',
+                                    'titulo_hj': 'Produto',
+                                    'preco_hj': 'Preço (Último)',
+                                    'estoque_ant': 'Estoque ANTES'
+                                }).style.format({
+                                    'Preço (Último)': 'R$ {:.2f}',
+                                    'Estoque ANTES': '{:.0f}'
+                                }),
                                 use_container_width=True
                             )
+                        else:
+                            st.success("Nenhum concorrente zerou estoque de produtos que já existiam na data anterior.")
 
-                        # ABA 3
-                        with tab3:
-                            st.subheader("🚨 Produtos que ZERARAM no Concorrente")
-                            zerados = df_final[(df_final['estoque_hj'] == 0) & (df_final['estoque_ant'] > 0)].copy()
-                            
-                            if not zerados.empty:
-                                st.dataframe(
-                                    zerados[['concorrente', 'titulo_hj', 'preco_hj', 'estoque_ant']].rename(columns={
-                                        'concorrente': 'Concorrente',
-                                        'titulo_hj': 'Produto',
-                                        'preco_hj': 'Preço (Último)',
-                                        'estoque_ant': 'Estoque ANTES'
-                                    }).style.format({
-                                        'Preço (Último)': 'R$ {:.2f}',
-                                        'Estoque ANTES': '{:.0f}'
-                                    }),
-                                    use_container_width=True
-                                )
-                            else:
-                                st.success("Nenhum concorrente zerou estoque importante hoje.")
-
-                    else:
-                        st.warning("Não encontrei dados suficientes para cruzar essas duas datas.")
+                else:
+                    st.warning("Não encontrei dados suficientes para cruzar essas duas datas.")
 
         else:
             st.info("👋 Bem-vindo! Suba sua primeira planilha.")
