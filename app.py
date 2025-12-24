@@ -8,32 +8,39 @@ import time
 st.set_page_config(page_title="Radar de Perfumes ML", layout="wide", page_icon="💎")
 
 # --- SISTEMA DE LOGIN ---
+
 def check_password():
     """Retorna True se o usuário inseriu a senha correta."""
-    def password_entered():
-        """Verifica se a senha inserida coincide com os Secrets."""
-        if (
-            st.session_state["username"] == st.secrets["credentials"]["usuario"]
-            and st.session_state["password"] == st.secrets["credentials"]["senha"]
-        ):
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # remove a senha da memória
-            del st.session_state["username"]
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
-        # Tela de Login
-        st.markdown("<h1 style='text-align: center;'>💎 Radar PureHome</h1>", unsafe_allow_html=True)
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.text_input("Usuário", on_change=password_entered, key="username")
-            st.text_input("Senha", type="password", on_change=password_entered, key="password")
-            if "password_correct" in st.session_state and not st.session_state["password_correct"]:
-                st.error("😕 Usuário ou senha incorretos.")
+        st.session_state["password_correct"] = False
+
+    if st.session_state["password_correct"]:
+        return True
+
+    # Tela de Login com Formulário
+    st.markdown("<h1 style='text-align: center;'>💎 Radar PureHome</h1>", unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("login_form"):
+            st.subheader("Acesso Restrito")
+            user = st.text_input("Usuário")
+            pw = st.text_input("Senha", type="password")
+            submit = st.form_submit_button("Entrar")
+
+            if submit:
+                if (
+                    user == st.secrets["credentials"]["usuario"]
+                    and pw == st.secrets["credentials"]["senha"]
+                ):
+                    st.session_state["password_correct"] = True
+                    st.rerun() # Recarrega para mostrar o sistema
+                else:
+                    st.error("😕 Usuário ou senha incorretos.")
         return False
-    else:
-        return st.session_state["password_correct"]
+    return False
+
+# O restante do código abaixo (if check_password(): ...) permanece igual
 
 # Só executa o resto do código se o login for bem-sucedido
 if check_password():
@@ -189,3 +196,4 @@ if check_password():
 
 # OK, vou acrescentar isso à minha memória.
 # Se quiser guardar isto sob a forma de uma instrução personalizada, pode adicioná-la às suas personal context settings (https://gemini.google.com/personal-context).
+
