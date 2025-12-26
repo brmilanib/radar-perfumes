@@ -113,21 +113,42 @@ if check_password():
 
         # --- ABA 1: DASHBOARD ---
         with tabs[0]:
-            st.subheader(f"📅 Período: {datas[-1].strftime('%d/%m/%Y')} ➔ {dt_hj.strftime('%d/%m/%Y')}")
+            # Identifica a data mais recente disponível
+            data_topo = datas[0] 
+            st.subheader(f"📅 Visão de Mercado: {data_topo.strftime('%d/%m/%Y')}")
+            
+            # Filtra os dados apenas do último dia para os Cards e Gráfico de Marcas
+            df_recente = df_g[df_g['data_registro'] == data_topo]
+            
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("SKUs no Radar", len(df_hj))
-            c2.metric("Zerados Hoje", len(zerados), delta=f"{len(zerados)} itens", delta_color="inverse")
-            c3.metric("Repostos (Voltaram)", len(repostos))
-            c4.metric("Faturamento Estimado", f"R$ {(df_hj['vendas_unid']*df_hj['preco']).sum():,.2f}")
+            # SKUs únicos no último dia
+            c1.metric("SKUs no Radar", len(df_recente))
+            
+            # Faturamento apenas do último dia (Foto atual)
+            fat_recente = (df_recente['vendas_unid'] * df_recente['preco']).sum()
+            c2.metric("Faturamento (Hoje)", f"R$ {fat_recente:,.2f}")
+            
+            # Ticket médio do último dia
+            c3.metric("Ticket Médio", f"R$ {df_recente['preco'].mean():.2f}")
+            
+            # Zerados apenas no último dia
+            c4.metric("Itens s/ Estoque", len(df_recente[df_recente['estoque'] == 0]))
             
             st.divider()
+            
             col1, col2 = st.columns(2)
             with col1:
-                f_m = df_hj.groupby('marca').apply(lambda x: (x['vendas_unid']*x['preco']).sum(), include_groups=False).sort_values(ascending=False).head(10).reset_index(name='fat')
-                st.plotly_chart(px.bar(f_m, x='marca', y='fat', title="Top 10 Marcas (R$)", text_auto='.2s', color='fat', color_continuous_scale='Greens'), use_container_width=True)
+                # Gráfico de Marcas focado no dia mais recente (Para não somar dias diferentes)
+                df_recente['faturamento'] = df_recente['vendas_unid'] * df_recente['preco']
+                f_m = df_recente.groupby('marca')['faturamento'].sum().sort_values(ascending=False).head(10).reset_index()
+                st.plotly_chart(px.bar(f_m, x='marca', y='faturamento', title="Top 10 Marcas (Faturamento Hoje)", text_auto='.2s', color='faturamento', color_continuous_scale='Greens'), use_container_width=True)
+            
             with col2:
-                f_c = df_g.groupby(['data_registro','concorrente']).apply(lambda x: (x['vendas_unid']*x['preco']).sum(), include_groups=False).reset_index(name='fat')
-                st.plotly_chart(px.line(f_c, x='data_registro', y='fat', color='concorrente', title="Market Share Diário"), use_container_width=True)
+                # O Gráfico de Linha CONTINUA mostrando o histórico (Aqui sim deve acumular os dias)
+                st.subheader("Evolução do Market Share (Histórico)")
+                df_g['fat_diario'] = df_g['vendas_unid'] * df_g['preco']
+                f_c = df_g.groupby(['data_registro','concorrente'])['fat_diario'].sum().reset_index()
+                st.plotly_chart(px.line(f_c, x='data_registro', y='fat_diario', color='concorrente', markers=True), use_container_width=True)
 
         # --- ABA 2: BUY BOX ---
         with tabs[1]:
@@ -252,5 +273,6 @@ if check_password():
             )
     else:
         st.info("Aguardando upload de dados...")
+
 
 
