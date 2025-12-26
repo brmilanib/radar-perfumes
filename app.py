@@ -7,14 +7,14 @@ import plotly.express as px
 import re
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Radar BI v2.4 - PureHome", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Radar BI v2.5 - PureHome", layout="wide", page_icon="📈")
 
-# --- NORMALIZAÇÃO ---
+# --- NORMALIZAÇÃO DE NOMES (Unifica Concorrentes) ---
 def normalizar_concorrente(nome):
     nome = re.sub(r'\s*\(\d+\)\s*', '', str(nome))
     return nome.strip().upper()
 
-# --- LOGIN ---
+# --- LOGIN SEGURO ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state["password_correct"] = False
@@ -29,7 +29,7 @@ def check_password():
                 if user == st.secrets["credentials"]["usuario"] and pw == st.secrets["credentials"]["senha"]:
                     st.session_state["password_correct"] = True
                     st.rerun()
-                else: st.error("Incorreto")
+                else: st.error("Acesso Negado")
         return False
 
 if check_password():
@@ -38,7 +38,7 @@ if check_password():
         return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
     supabase = init_connection()
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=300)
     def busca_dados():
         todos = []
         offset = 0
@@ -56,21 +56,20 @@ if check_password():
 
     df_g = busca_dados()
 
-    # --- SIDEBAR ---
+    # --- SIDEBAR (UPLOAD E CACHE) ---
     with st.sidebar:
-        st.title("⚙️ Painel Pro")
-        if st.button("🔄 Atualizar Dados"):
+        st.title("⚙️ Controle")
+        if st.button("🔄 Atualizar BI (Limpar Cache)"):
             st.cache_data.clear()
             st.rerun()
         if st.button("🚪 Sair"):
             del st.session_state["password_correct"]
             st.rerun()
         st.divider()
-        st.subheader("📤 Upload")
-        up_file = st.file_uploader("Arquivo", type=["xlsx", "csv"])
-        d_ref = st.date_input("Data do arquivo", datetime.now())
+        up_file = st.file_uploader("Subir Planilha Nubmetrics")
+        d_ref = st.date_input("Data da Extração", datetime.now())
         c_in = st.text_input("Nome do Concorrente")
-        if st.button("💾 Salvar"):
+        if st.button("💾 Salvar no Radar"):
             if up_file and c_in:
                 df_up = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
                 dados = []
@@ -84,7 +83,7 @@ if check_password():
                     })
                 for i in range(0, len(dados), 1000): supabase.table('historico_concorrentes').insert(dados[i:i+1000]).execute()
                 st.cache_data.clear()
-                st.success("✅ Ok!"); time.sleep(1); st.rerun()
+                st.success("Dados Integrados!"); time.sleep(1); st.rerun()
 
     if not df_g.empty:
         datas = sorted(df_g['data_registro'].unique(), reverse=True)
@@ -92,44 +91,39 @@ if check_password():
         
         tabs = st.tabs(["📊 Dashboard", "💰 Buy Box", "🤖 Inteligência de Compra", "📋 SKUs", "🚨 Rupturas", "🔍 Comparativo"])
 
-        # --- ABA 1: DASHBOARD ---
+        # --- 1. DASHBOARD ---
         with tabs[0]:
-            st.header("📊 Inteligência de Mercado")
-            modo = st.radio("Período de análise:", ["Apenas Hoje", "Todo o Período"], horizontal=True, key="dash_filter")
-            
-            if modo == "Apenas Hoje":
-                df_d = df_g[df_g['data_registro'] == dt_hj].copy()
-                st.info(f"📍 Dados de: **{dt_hj.strftime('%d/%m/%Y')}**")
-            else:
-                df_d = df_g.copy()
-                st.info(f"📍 Acumulado: **{datas[-1].strftime('%d/%m/%Y')}** até **{dt_hj.strftime('%d/%m/%Y')}**")
+            st.header("📊 Resumo de Faturamento")
+            modo = st.radio("Período:", ["Hoje", "Acumulado"], horizontal=True, key="filtro_v25")
+            df_d = df_g[df_g['data_registro'] == dt_hj].copy() if modo == "Hoje" else df_g.copy()
 
             c1, c2, c3, c4 = st.columns(4)
-            c1.metric("SKUs", len(df_d['gtin'].unique()))
-            c2.metric("Faturamento", f"R$ {(df_d['vendas_unid']*df_d['preco']).sum():,.2f}")
+            c1.metric("SKUs Unívocos", len(df_d['gtin'].unique()))
+            fat_val = (df_d['vendas_unid']*df_d['preco']).sum()
+            c2.metric("Vendas (R$)", f"R$ {fat_val:,.2f}")
             c3.metric("Ticket Médio", f"R$ {df_d['preco'].mean():.2f}")
-            c4.metric("Itens s/ Estoque", len(df_d[df_d['estoque'] == 0]))
+            c4.metric("Itens Zerados", len(df_d[df_d['estoque'] == 0]))
 
             st.divider()
             col1, col2 = st.columns(2)
             with col1:
-                df_d['fat'] = df_d['vendas_unid'] * df_d['preco']
-                f_m = df_d.groupby('marca')['fat'].sum().sort_values(ascending=False).head(10).reset_index()
-                st.plotly_chart(px.bar(f_m, x='marca', y='fat', title="Top 10 Marcas (R$)", text_auto='.2s', color_continuous_scale='Greens'), use_container_width=True)
+                df_d['fat_i'] = df_d['vendas_unid'] * df_d['preco']
+                f_m = df_d.groupby('marca')['fat_i'].sum().sort_values(ascending=False).head(10).reset_index()
+                st.plotly_chart(px.bar(f_m, x='marca', y='fat_i', title="Top 10 Marcas", text_auto='.2s', color_continuous_scale='Greens'), use_container_width=True)
             with col2:
-                df_g['fat_diario'] = df_g['vendas_unid'] * df_g['preco']
-                f_c = df_g.groupby(['data_registro','concorrente'])['fat_diario'].sum().reset_index()
-                st.plotly_chart(px.line(f_c, x='data_registro', y='fat_diario', color='concorrente', title="Market Share Histórico", markers=True), use_container_width=True)
+                df_g['fat_ev'] = df_g['vendas_unid'] * df_g['preco']
+                f_c = df_g.groupby(['data_registro','concorrente'])['fat_ev'].sum().reset_index()
+                st.plotly_chart(px.line(f_c, x='data_registro', y='fat_ev', color='concorrente', title="Market Share Histórico", markers=True), use_container_width=True)
 
-        # --- ABA 2: BUY BOX ---
+        # --- 2. BUY BOX ---
         with tabs[1]:
-            st.header("🎯 Estratégia Buy Box (- R$ 1,00)")
-            df_bb_base = df_g[df_g['data_registro'] == dt_hj].copy()
-            df_bb = df_bb_base[df_bb_base['preco'] > 0].groupby(['gtin', 'titulo']).agg({'preco': 'min', 'concorrente': 'first'}).reset_index()
+            st.header("🎯 Sugestão de Preço (- R$ 1,00)")
+            df_bb_h = df_g[df_g['data_registro'] == dt_hj].copy()
+            df_bb = df_bb_h[df_bb_h['preco'] > 0].groupby(['gtin', 'titulo']).agg({'preco': 'min', 'concorrente': 'first'}).reset_index()
             df_bb['Sugerido'] = df_bb['preco'] - 1.0
-            st.dataframe(df_bb.rename(columns={'titulo': 'Produto', 'preco': 'Menor Preço', 'concorrente': 'Líder'}).style.format({'Menor Preço': 'R$ {:.2f}', 'Sugerido': 'R$ {:.2f}'}), use_container_width=True)
+            st.dataframe(df_bb.rename(columns={'titulo': 'Produto', 'preco': 'Menor Mercado', 'concorrente': 'Líder'}).style.format({'Menor Mercado': 'R$ {:.2f}', 'Sugerido': 'R$ {:.2f}'}), use_container_width=True)
 
-        # --- ABA 3: INTELIGÊNCIA DE COMPRA ---
+        # --- 3. INTELIGÊNCIA DE COMPRA (RESTAURADA) ---
         with tabs[2]:
             st.header("🤖 Projeção de Estoque")
             df_ia_base = df_g[df_g['data_registro'] == dt_hj].copy()
@@ -154,48 +148,53 @@ if check_password():
             i4.metric("🔥 Queima", res_ia.get("🔥 QUEIMA / LENTO", 0))
             
             st.divider()
-            filtro_ia = st.multiselect("Filtrar Status", df_ia['Sugestão'].unique(), default=["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE"])
-            df_ia_f = df_ia[df_ia['Sugestão'].isin(filtro_ia)].sort_values(['Sugestão', 'vendas_unid'], ascending=[True, False])
-            st.dataframe(df_ia_f[['Sugestão', 'titulo', 'vendas_unid', 'estoque', 'preco', 'Venda/Dia', 'Dias']].rename(columns={'titulo':'Produto','preco':'Menor Preço Mercado'}).style.format({'Menor Preço Mercado':'R$ {:.2f}','Venda/Dia':'{:.1f}','Dias':'{:.0f} dias'}).map(lambda x: 'background-color: #f8d7da; font-weight: bold' if x == "🚨 COMPRA URGENTE" else ('background-color: #fff3cd' if x == "⚠️ REPOR BREVE" else ''), subset=['Sugestão']), use_container_width=True)
+            f_ia = st.multiselect("Filtrar Status", df_ia['Sugestão'].unique(), default=["🚨 COMPRA URGENTE", "⚠️ REPOR BREVE"])
+            df_ia_f = df_ia[df_ia['Sugestão'].isin(f_ia)].sort_values(['Sugestão', 'vendas_unid'], ascending=[True, False])
+            
+            st.dataframe(df_ia_f[['Sugestão', 'titulo', 'vendas_unid', 'estoque', 'preco', 'Venda/Dia', 'Dias']]
+                         .rename(columns={'titulo':'Produto','preco':'Menor Preço','vendas_unid':'Vendas','estoque':'Estoque'})
+                         .style.format({'Menor Preço':'R$ {:.2f}','Venda/Dia':'{:.1f}','Dias':'{:.0f} dias'})
+                         .map(lambda x: 'background-color: #f8d7da; font-weight: bold; color: black' if x == "🚨 COMPRA URGENTE" else ('background-color: #fff3cd; color: black' if x == "⚠️ REPOR BREVE" else ''), subset=['Sugestão']), use_container_width=True, height=500)
 
-        # --- ABA 4: SKUs ---
+        # --- 4. SKUs (RESTAURADA) ---
         with tabs[3]:
-            st.header("📋 SKUs Monitorados")
-            search = st.text_input("🔍 Buscar Produto por nome ou GTIN")
+            st.header("📋 Monitoramento de SKUs")
+            busca = st.text_input("🔍 Pesquisar por Nome ou GTIN")
             df_sku = df_g[df_g['data_registro'] == dt_hj].sort_values('vendas_unid', ascending=False)
-            if search: df_sku = df_sku[df_sku['titulo'].str.contains(search, case=False) | df_sku['gtin'].str.contains(search)]
-            st.dataframe(df_sku[['vendas_unid','titulo','concorrente','preco','estoque','gtin']], use_container_width=True)
+            if busca: df_sku = df_sku[df_sku['titulo'].str.contains(busca, case=False) | df_sku['gtin'].str.contains(busca)]
+            st.dataframe(df_sku[['vendas_unid','titulo','concorrente','preco','estoque','gtin']], use_container_width=True, height=600)
 
-        # --- ABA 5: RUPTURAS ---
+        # --- 5. RUPTURAS (RESTAURADA LISTA DUPLA) ---
         with tabs[4]:
-            df_hj_r = df_g[df_g['data_registro'] == dt_hj].copy()
-            df_at_r = df_g[df_g['data_registro'] == dt_ant].copy()
-            # Lógica de reposição segura
-            df_c_r = df_hj_r[['gtin','concorrente','estoque']].merge(df_at_r[['gtin','concorrente','estoque']], on=['gtin','concorrente'], suffixes=('_hj','_ant'), how='inner')
-            repostos = df_c_r[(df_c_r['estoque_hj'] > 0) & (df_c_r['estoque_ant'] == 0)].merge(df_hj_r[['gtin','concorrente','titulo','preco']], on=['gtin','concorrente'])
-            zerados = df_hj_r[df_hj_r['estoque'] == 0].sort_values('vendas_unid', ascending=False)
+            d_hj_r = df_g[df_g['data_registro'] == dt_hj].copy()
+            d_at_r = df_g[df_g['data_registro'] == dt_ant].copy()
+            
+            c_rup = d_hj_r[['gtin','concorrente','estoque']].merge(d_at_r[['gtin','concorrente','estoque']], on=['gtin','concorrente'], suffixes=('_h','_a'), how='inner')
+            rep = c_rup[(c_rup['estoque_h'] > 0) & (c_rup['estoque_a'] == 0)].merge(d_hj_r[['gtin','concorrente','titulo','preco']], on=['gtin','concorrente'])
+            zer = d_hj_r[d_hj_r['estoque'] == 0].sort_values('vendas_unid', ascending=False)
             
             col_z, col_r = st.columns(2)
             with col_z:
-                st.subheader(f"❌ Zerados Agora ({len(zerados)})")
-                st.dataframe(zerados[['concorrente','titulo','vendas_unid','preco']].rename(columns={'vendas_unid':'Vendas Hist.'}), use_container_width=True)
+                st.subheader(f"❌ Zerados Agora ({len(zer)})")
+                st.dataframe(zer[['concorrente','titulo','vendas_unid','preco']], use_container_width=True)
             with col_r:
-                st.subheader(f"✅ Repostos ({len(repostos)})")
-                st.dataframe(repostos[['concorrente','titulo','estoque_hj','preco']].rename(columns={'estoque_hj':'Estoque'}), use_container_width=True)
+                st.subheader(f"✅ Repostos ({len(rep)})")
+                st.dataframe(rep[['concorrente','titulo','estoque_h','preco']].rename(columns={'estoque_h':'Estoque'}), use_container_width=True)
 
-        # --- ABA 6: COMPARATIVO ---
+        # --- 6. COMPARATIVO (RESTAURADA CORES E %) ---
         with tabs[5]:
-            st.header("🔍 Comparativo Diário de Variação")
-            c_c1, c_c2 = st.columns(2)
-            with c_c1: s_hj = st.selectbox("Data Recente", datas, index=0)
-            with c_c2: s_ant = st.selectbox("Data Anterior", datas, index=min(1, len(datas)-1))
+            st.header("🔍 Auditoria de Variação")
+            col_d1, col_d2 = st.columns(2)
+            with col_d1: d1 = st.selectbox("Data Atual", datas, index=0)
+            with col_d2: d2 = st.selectbox("Data Comparação", datas, index=min(1, len(datas)-1))
             
-            df_a_c = df_g[df_g['data_registro'] == s_hj].set_index(['gtin','concorrente'])
-            df_b_c = df_g[df_g['data_registro'] == s_ant].set_index(['gtin','concorrente'])
-            res_c = df_a_c.join(df_b_c, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
+            df_1 = df_g[df_g['data_registro'] == d1].set_index(['gtin','concorrente'])
+            df_2 = df_g[df_g['data_registro'] == d2].set_index(['gtin','concorrente'])
+            res_c = df_1.join(df_2, lsuffix='_hj', rsuffix='_ant', how='inner').reset_index()
             res_c['var_pct'] = ((res_c['preco_hj'] - res_c['preco_ant']) / res_c['preco_ant']) * 100
             
-            df_f_c = res_c[['concorrente','titulo_hj','preco_ant','preco_hj','var_pct','estoque_hj']].rename(columns={'titulo_hj':'Produto','preco_ant':'Ant.','preco_hj':'Hj','var_pct':'% Var'})
-            st.dataframe(df_f_c.sort_values('% Var', ascending=False).style.format({'Ant.':'R$ {:.2f}','Hj':'R$ {:.2f}','% Var':'{:+.2f}%'}).map(lambda x: 'color: green; font-weight: bold' if x > 0 else ('color: red; font-weight: bold' if x < 0 else 'color: gray'), subset=['% Var']), use_container_width=True)
+            df_f = res_c[['concorrente','titulo_hj','preco_ant','preco_hj','var_pct','estoque_hj']].rename(columns={'titulo_hj':'Produto','preco_ant':'Preço Ant.','preco_hj':'Preço Hj','var_pct':'% Var','estoque_hj':'Estoque'})
+            st.dataframe(df_f.sort_values('% Var', ascending=False).style.format({'Preço Ant.':'R$ {:.2f}','Preço Hj':'R$ {:.2f}','% Var':'{:+.2f}%'})
+                         .map(lambda x: 'color: green; font-weight: bold' if x > 0 else ('color: red; font-weight: bold' if x < 0 else 'color: gray'), subset=['% Var']), use_container_width=True, height=600)
     else:
-        st.info("Aguardando upload de dados...")
+        st.info("Aguardando alimentação de dados...")
